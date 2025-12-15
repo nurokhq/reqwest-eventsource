@@ -10,18 +10,17 @@ use std::string::FromUtf8Error;
 #[cfg(doc)]
 use reqwest::RequestBuilder;
 
-/// Error raised when a [`RequestBuilder`] cannot be cloned. See [`RequestBuilder::try_clone`] for
-/// more information
-#[derive(Debug, Clone, Copy)]
-pub struct CannotCloneRequestError;
+/// Error raised when a [`RequestBuilder`] cannot be created
+#[derive(Debug, Clone)]
+pub struct CannotCreateRequestBuilderError(String);
 
-impl fmt::Display for CannotCloneRequestError {
+impl fmt::Display for CannotCreateRequestBuilderError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("expected a cloneable request")
+        f.write_str(&self.0)
     }
 }
 
-impl std::error::Error for CannotCloneRequestError {}
+impl std::error::Error for CannotCreateRequestBuilderError {}
 
 /// Error raised by the EventSource stream fetching and parsing
 #[derive(Debug, Error)]
@@ -37,16 +36,19 @@ pub enum Error {
     Transport(ReqwestError),
     /// The `Content-Type` returned by the server is invalid
     #[error("Invalid header value: {0:?}")]
-    InvalidContentType(HeaderValue, Response),
+    InvalidContentType(HeaderValue, Box<Response>),
     /// The status code returned by the server is invalid
     #[error("Invalid status code: {0}")]
-    InvalidStatusCode(StatusCode, Response),
+    InvalidStatusCode(StatusCode, Box<Response>),
     /// The `Last-Event-ID` cannot be formed into a Header to be submitted to the server
     #[error("Invalid `Last-Event-ID`: {0}")]
     InvalidLastEventId(String),
     /// The stream ended
     #[error("Stream ended")]
     StreamEnded,
+    /// The RequestBuilder could not be created
+    #[error(transparent)]
+    CannotCreateRequestBuilder(CannotCreateRequestBuilderError),
 }
 
 impl From<EventStreamError<ReqwestError>> for Error {
@@ -56,5 +58,11 @@ impl From<EventStreamError<ReqwestError>> for Error {
             EventStreamError::Parser(err) => Self::Parser(err),
             EventStreamError::Transport(err) => Self::Transport(err),
         }
+    }
+}
+
+impl From<CannotCreateRequestBuilderError> for Error {
+    fn from(err: CannotCreateRequestBuilderError) -> Self {
+        Self::CannotCreateRequestBuilder(err)
     }
 }

@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::error::{CannotCreateRequestBuilderError, Error};
 use crate::retry::{RetryPolicy, DEFAULT_RETRY};
 use core::pin::Pin;
 use eventsource_stream::Eventsource;
@@ -49,7 +49,7 @@ pin_project! {
 /// closure that creates [`RequestBuilder`]s and retries requests when they fail.
 #[project = EventSourceProjection]
 pub struct EventSource {
-    builder_fn: Box<dyn FnMut() -> Result<RequestBuilder, ReqwestError> + Send + 'static>,
+    builder_fn: Box<dyn FnMut() -> Result<RequestBuilder, CannotCreateRequestBuilderError> + Send + 'static>,
     #[pin]
     next_response: Option<ResponseFuture>,
     #[pin]
@@ -71,10 +71,9 @@ impl EventSource {
     ///
     /// The `Accept: text/event-stream` header will be automatically added to all requests.
     /// On retries, the `Last-Event-ID` header will also be automatically added.
-    pub fn new<F, E>(mut builder_fn: F) -> Result<Self, E>
+    pub fn new<F>(mut builder_fn: F) -> Result<Self, Error>
     where
-        F: FnMut() -> Result<RequestBuilder, E> + Send + 'static,
-        E: Into<ReqwestError>,
+        F: FnMut() -> Result<RequestBuilder, CannotCreateRequestBuilderError> + Send + 'static,
     {
         // Call the closure once to create the initial request
         let builder = builder_fn()?.header(
@@ -83,8 +82,8 @@ impl EventSource {
         );
         let res_future = Box::pin(builder.send());
         
-        // Store the closure, converting errors to ReqwestError for internal use
-        let builder_fn = Box::new(move || builder_fn().map_err(Into::into));
+        // Store the closure
+        let builder_fn: Box<dyn FnMut() -> Result<RequestBuilder, CannotCreateRequestBuilderError> + Send + 'static> = Box::new(builder_fn);
         
         Ok(Self {
             builder_fn,
@@ -99,10 +98,10 @@ impl EventSource {
     }
 
     /// Create a simple EventSource based on a GET request
-    pub fn get<T: IntoUrl>(url: T) -> Result<Self, ReqwestError> {
+    pub fn get<T: IntoUrl>(url: T) -> Result<Self, Error> {
         let client = reqwest::Client::new();
-        let url = url.into_url()?;
-        Self::new::<_, ReqwestError>(move || {
+        let url = url.into_url().map_err(Error::Transport)?;
+        Self::new(move || {
             Ok(client.get(url.clone()))
         })
     }
@@ -138,7 +137,7 @@ fn check_response(response: Response) -> Result<Response, Error> {
     match response.status() {
         StatusCode::OK => {}
         status => {
-            return Err(Error::InvalidStatusCode(status, response));
+            return Err(Error::InvalidStatusCode(status, Box::new(response)));
         }
     }
     let content_type =
@@ -147,7 +146,7 @@ fn check_response(response: Response) -> Result<Response, Error> {
         } else {
             return Err(Error::InvalidContentType(
                 HeaderValue::from_static(""),
-                response,
+                Box::new(response),
             ));
         };
     if content_type
@@ -164,7 +163,7 @@ fn check_response(response: Response) -> Result<Response, Error> {
     {
         Ok(response)
     } else {
-        Err(Error::InvalidContentType(content_type.clone(), response))
+        Err(Error::InvalidContentType(content_type.clone(), Box::new(response)))
     }
 }
 
@@ -177,7 +176,7 @@ impl<'a> EventSourceProjection<'a> {
     fn retry_fetch(&mut self) -> Result<(), Error> {
         self.cur_stream.take();
         let mut builder = (self.builder_fn)()
-            .map_err(Error::Transport)?;
+            .map_err(Error::from)?;
         builder = builder.header(
             reqwest::header::ACCEPT,
             HeaderValue::from_static("text/event-stream"),

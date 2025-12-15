@@ -27,5 +27,5 @@ mod error;
 mod event_source;
 pub mod retry;
 
-pub use error::{CannotCloneRequestError, Error};
+pub use error::{CannotCreateRequestBuilderError, Error};
 pub use event_source::{Event, EventSource, ReadyState};
