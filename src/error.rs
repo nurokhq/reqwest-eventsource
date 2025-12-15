@@ -14,6 +14,12 @@ use reqwest::RequestBuilder;
 #[derive(Debug, Clone)]
 pub struct CannotCreateRequestBuilderError(String);
 
+impl CannotCreateRequestBuilderError {
+    pub fn new(error: String) -> Self {
+        Self(error)
+    }
+}
+
 impl fmt::Display for CannotCreateRequestBuilderError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(&self.0)
