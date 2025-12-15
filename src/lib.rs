@@ -25,9 +25,7 @@ extern crate thiserror;
 
 mod error;
 mod event_source;
-mod reqwest_ext;
 pub mod retry;
 
 pub use error::{CannotCloneRequestError, Error};
 pub use event_source::{Event, EventSource, ReadyState};
-pub use reqwest_ext::RequestBuilderExt;

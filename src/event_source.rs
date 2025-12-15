@@ -1,4 +1,4 @@
-use crate::error::{CannotCloneRequestError, Error};
+use crate::error::Error;
 use crate::retry::{RetryPolicy, DEFAULT_RETRY};
 use core::pin::Pin;
 use eventsource_stream::Eventsource;
@@ -45,11 +45,11 @@ pub enum ReadyState {
 }
 
 pin_project! {
-/// Provides the [`Stream`] implementation for the [`Event`] items. This wraps the
-/// [`RequestBuilder`] and retries requests when they fail.
+/// Provides the [`Stream`] implementation for the [`Event`] items. This wraps a
+/// closure that creates [`RequestBuilder`]s and retries requests when they fail.
 #[project = EventSourceProjection]
 pub struct EventSource {
-    builder: RequestBuilder,
+    builder_fn: Box<dyn FnMut() -> Result<RequestBuilder, ReqwestError> + Send + 'static>,
     #[pin]
     next_response: Option<ResponseFuture>,
     #[pin]
@@ -64,15 +64,30 @@ pub struct EventSource {
 }
 
 impl EventSource {
-    /// Wrap a [`RequestBuilder`]
-    pub fn new(builder: RequestBuilder) -> Result<Self, CannotCloneRequestError> {
-        let builder = builder.header(
+    /// Create a new [`EventSource`] from a closure that returns a [`RequestBuilder`].
+    /// The closure will be called whenever a new request needs to be made (including retries).
+    /// The closure should return `Ok(RequestBuilder)` on success, or an error if the request
+    /// cannot be created.
+    ///
+    /// The `Accept: text/event-stream` header will be automatically added to all requests.
+    /// On retries, the `Last-Event-ID` header will also be automatically added.
+    pub fn new<F, E>(mut builder_fn: F) -> Result<Self, E>
+    where
+        F: FnMut() -> Result<RequestBuilder, E> + Send + 'static,
+        E: Into<ReqwestError>,
+    {
+        // Call the closure once to create the initial request
+        let builder = builder_fn()?.header(
             reqwest::header::ACCEPT,
             HeaderValue::from_static("text/event-stream"),
         );
-        let res_future = Box::pin(builder.try_clone().ok_or(CannotCloneRequestError)?.send());
+        let res_future = Box::pin(builder.send());
+        
+        // Store the closure, converting errors to ReqwestError for internal use
+        let builder_fn = Box::new(move || builder_fn().map_err(Into::into));
+        
         Ok(Self {
-            builder,
+            builder_fn,
             next_response: Some(res_future),
             cur_stream: None,
             delay: None,
@@ -84,8 +99,12 @@ impl EventSource {
     }
 
     /// Create a simple EventSource based on a GET request
-    pub fn get<T: IntoUrl>(url: T) -> Self {
-        Self::new(reqwest::Client::new().get(url)).unwrap()
+    pub fn get<T: IntoUrl>(url: T) -> Result<Self, ReqwestError> {
+        let client = reqwest::Client::new();
+        let url = url.into_url()?;
+        Self::new::<_, ReqwestError>(move || {
+            Ok(client.get(url.clone()))
+        })
     }
 
     /// Close the EventSource stream and stop trying to reconnect
@@ -157,7 +176,13 @@ impl<'a> EventSourceProjection<'a> {
 
     fn retry_fetch(&mut self) -> Result<(), Error> {
         self.cur_stream.take();
-        let req = self.builder.try_clone().unwrap().header(
+        let mut builder = (self.builder_fn)()
+            .map_err(Error::Transport)?;
+        builder = builder.header(
+            reqwest::header::ACCEPT,
+            HeaderValue::from_static("text/event-stream"),
+        );
+        let req = builder.header(
             HeaderName::from_static("last-event-id"),
             HeaderValue::from_str(self.last_event_id)
                 .map_err(|_| Error::InvalidLastEventId(self.last_event_id.clone()))?,
